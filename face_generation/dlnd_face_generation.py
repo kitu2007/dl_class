@@ -25,7 +25,7 @@ DON'T MODIFY ANYTHING IN THIS CELL
 """
 import helper
 import os
-
+import pickle as pkl 
 helper.download_extract('mnist', data_dir)
 helper.download_extract('celeba', data_dir)
 
@@ -47,6 +47,7 @@ from glob import glob
 from matplotlib import pyplot
 import ipdb
 from IPython import embed
+pyplot.ion()
 
 mnist_images = helper.get_batch(glob(os.path.join(data_dir, 'mnist/*.jpg'))[:show_n_images], 28, 28, 'L')
 pyplot.imshow(helper.images_square_grid(mnist_images, 'L'), cmap='gray')
@@ -189,37 +190,37 @@ def generator(z, out_channel_dim, is_train=True):
     :return: The tensor output of the generator
     """
     alpha = 0.2
-    in_channels = 1024
+    in_channels = 512
     with tf.variable_scope('generator', reuse= (not is_train)) as scope:
         # TODO: Implement Function
         # z is a one dimensional random vector
         x = tf.layers.dense(z, 4*4*in_channels)
         x = tf.reshape(x,(-1, 4, 4, in_channels))
-        x = tf.layers.batch_normalization(x, training=is_train)
+        x = tf.layers.batch_normalization(x, training=is_train, center=False, scale=False)
         x = tf.maximum(alpha*x, x)
         # 4*4*in_channels
 
-        x = tf.layers.conv2d_transpose(x,in_channels/2,(5,5),(2,2),padding='same')
-        x = tf.layers.batch_normalization(x,training=is_train)
+        x = tf.layers.conv2d_transpose(x, int(in_channels/2), (5,5),(2,2),padding='same')
+        x = tf.layers.batch_normalization(x, training=is_train, center=False, scale=False)
         x = tf.maximum(alpha*x, x)
         # 8*8*in_channels/2        - 512
 
         x1 = tf.slice(x,[0,1,1,0],[-1,-1,-1,-1])
         # 7*7*in_channels/2        
 
-        x1 = tf.layers.conv2d_transpose(x1,in_channels/4,(5,5),(2,2),padding='same')
-        x1 = tf.layers.batch_normalization(x1,training=is_train)
+        x1 = tf.layers.conv2d_transpose(x1,int(in_channels/4),(5,5),(2,2),padding='same')
+        x1 = tf.layers.batch_normalization(x1, training=is_train, center=False, scale=False)
         x1 = tf.maximum(alpha*x1, x1)
         # 14*14*in_channels/2  - 256
-
-        x1 = tf.layers.conv2d_transpose(x1,in_channels/8,(5,5),(2,2),padding='same')
-        x1 = tf.layers.batch_normalization(x1,training=is_train)
-        x1 = tf.maximum(alpha*x1, x1)
-        # 28*28*in_channels/2  - 128
-
-        
-        x1 = tf.layers.conv2d_transpose(x1, out_channel_dim,(5,5),(1,1),padding='same')
-        # 28X28* 128
+        if in_channels>512:
+            x1 = tf.layers.conv2d_transpose(x1,int(in_channels/8),(5,5),(2,2),padding='same')
+            x1 = tf.layers.batch_normalization(x1, training=is_train, center=False, scale=False)
+            x1 = tf.maximum(alpha*x1, x1)
+            x1 = tf.layers.conv2d_transpose(x1, out_channel_dim,(5,5),(1,1),padding='same')
+            # 28*28*in_channels/2  - 128
+        else:
+            x1 = tf.layers.conv2d_transpose(x1, out_channel_dim,(5,5),(2,2),padding='same')
+            # 28X28* 128
         
         out = tf.tanh(x1)
     
@@ -326,9 +327,11 @@ def show_generator_output(sess, n_images, input_z, out_channel_dim, image_mode):
         generator(input_z, out_channel_dim, False),
         feed_dict={input_z: example_z})
     
+    #ipdb.set_trace()
     images_grid = helper.images_square_grid(samples, image_mode)
     pyplot.imshow(images_grid, cmap=cmap)
     pyplot.show()
+    return samples
 
 
 # ### Train
@@ -354,15 +357,23 @@ def train(epoch_count, batch_size, z_dim, learning_rate, beta1, get_batches, dat
     :param data_image_mode: The image mode to use for images ("RGB" or "L")
     """
     # TODO: Build Model
+    ckpt_dir = './checkpoint'
+    if not os.path.exists(ckpt_dir):
+        os.makedirs(ckpt_dir)
+       
+    show_every = 100 # show every 1000 iter
     num_train_examples = data_shape[0]
     image_width = data_shape[1]
     image_height = data_shape[2]
     image_channels = data_shape[3]
     sample_z = np.random.uniform(-1,1,size=(batch_size,z_dim))
-    
+
+    # defined the net here
     input_real, input_z, learning_rate_ph = model_inputs(image_width, image_height, image_channels,z_dim)
     d_loss, g_loss = model_loss(input_real, input_z, image_channels )
     d_train_opt, g_train_opt = model_opt(d_loss, g_loss, learning_rate_ph, beta1)
+
+    saver = tf.train.Saver()
     counter = 0
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
@@ -370,22 +381,33 @@ def train(epoch_count, batch_size, z_dim, learning_rate, beta1, get_batches, dat
         # images1 = next(get_batches(batch_size))
         # samples = sess.run(discriminator(input_real,True), feed_dict={input_real:images1})
         for epoch_i in range(epoch_count):
-            for batch_images in get_batches(batch_size):
+            generated_sample_list = []
+            for iter, batch_images in enumerate(get_batches(batch_size)):
                 batch_z = np.random.uniform(-1,1,size=(batch_size,z_dim))
                 counter +=1
                 # TODO: Train Model
-                _, d_loss_val = sess.run([d_train_opt, d_loss],feed_dict={input_real:batch_images,
-                                                  input_z: batch_z,
-                                                  learning_rate_ph:learning_rate})
+                if iter % 5 == 0:
+                    _, d_loss_val = sess.run([d_train_opt, d_loss],feed_dict =
+                                             {input_real:batch_images,
+                                              input_z: batch_z,
+                                             learning_rate_ph:learning_rate})
 
                 _, g_loss_val = sess.run([g_train_opt, g_loss],feed_dict={input_real:batch_images,
                                                   input_z: batch_z,
                                                   learning_rate_ph:learning_rate})
                 if counter % 10 == 0:
-                    print ('epoch:{} iter:{} d_loss:{} g_loss:{}'.format(epoch_i, counter, d_loss_val, g_loss_val))
-                
+                    print ('epoch:{} iter:{} counter:{} d_loss:{} g_loss:{}'.format(epoch_i, iter, counter, d_loss_val, g_loss_val))
 
-
+                if show_every > 0 and counter % show_every == 0:
+                    n_images = 16
+                    generated_samples = show_generator_output(sess, n_images, input_z, image_channels, data_image_mode)
+                    generated_sample_list.append((epoch_i, counter, generated_samples))
+            
+            ckpt = '{}/generator_epoch_{}.ckpt'.format(ckpt_dir,epoch_i)
+            saver.save(sess, ckpt)
+            with open('samples{}.pkl'.format(epoch_i), 'wb') as fp:
+                pkl.dump(generated_sample_list,fp)
+    
 # ### MNIST
 # Test your GANs architecture on MNIST.  After 2 epochs, the GANs should be able to generate images that look like handwritten digits.  Make sure the loss of the generator is lower than the loss of the discriminator or close to 0.
 
@@ -400,14 +422,44 @@ beta1 = 0.5
 """
 DON'T MODIFY ANYTHING IN THIS CELL THAT IS BELOW THIS LINE
 """
+do_train = True
 epochs = 2
-
 mnist_dataset = helper.Dataset('mnist', glob(os.path.join(data_dir, 'mnist/*.jpg')))
-with tf.Graph().as_default():
-    train(epochs, batch_size, z_dim, learning_rate, beta1, mnist_dataset.get_batches,
-          mnist_dataset.shape, mnist_dataset.image_mode)
+if do_train:
+    with tf.Graph().as_default():
+        train(epochs, batch_size, z_dim, learning_rate, beta1, mnist_dataset.get_batches,
+              mnist_dataset.shape, mnist_dataset.image_mode)
     
-    
+
+def inference(ckpt, batch_size, z_dim, get_batches, data_shape, data_image_mode):
+
+    show_every = 1 # show every 1000 iter
+    num_train_examples = data_shape[0]
+    image_width = data_shape[1]
+    image_height = data_shape[2]
+    image_channels = data_shape[3]
+    sample_z = np.random.uniform(-1,1,size=(batch_size,z_dim))
+    generated_sample_list = []
+
+    # defined the net here
+    input_real, input_z, learning_rate_ph = model_inputs(image_width, image_height, image_channels,z_dim)
+    d_loss, g_loss = model_loss(input_real, input_z, image_channels )
+    d_train_opt, g_train_opt = model_opt(d_loss, g_loss, learning_rate_ph, beta1)
+
+    saver = tf.train.Saver()
+    counter = 0
+    n_images = 10
+    with tf.Session() as sess:
+        saver.restore(sess, ckpt)
+        print ('Model restored')        
+        generated_samples = show_generator_output(sess, n_images, input_z, image_channels, data_image_mode)
+        generated_sample_list.append((0, counter, generated_samples))
+        #ipdb.set_trace()
+
+if not do_train:
+    with tf.Graph().as_default():
+        ckpt1 = './checkpoint/generator_epoch_0.ckpt'
+        inference(ckpt1, batch_size, z_dim, mnist_dataset.get_batches, mnist_dataset.shape, mnist_dataset.image_mode)
 
 if 0:
     # ### CelebA
